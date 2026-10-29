@@ -5,6 +5,9 @@
 每条输出保留 asrText、sessionId、interactionId 等基础字段，并把
 nluResults 中符合条件的模型记录整理到 llm 列表。
 
+每个文件内以 sessionId + interactionId 为唯一键。重复时优先保留 llm 中
+包含 promptId=jev 的记录；若重复记录都包含或都不包含，则保留靠前的一条。
+
 llm 只保留以下 llmModelInfos 元素：
 1. promptId 为 DOMAIN_SELECT_TURBO_PY_PRO；
 2. promptId 为 TOOL_AND_EVENT_SELECT_PY_PRO；
@@ -131,6 +134,34 @@ def transform(record):
         return output, str(exc)
 
 
+def _has_jev(record):
+    return any(item.get('promptId') == 'jev' for item in record.get('llm') or [])
+
+
+def _unique_key(record):
+    return (str(record.get('sessionId', '')), str(record.get('interactionId', '')))
+
+
+def dedupe_records(records):
+    """按文件内唯一键去重，返回保留记录和被去掉的数量。"""
+    selected = {}
+    for record in records:
+        key = _unique_key(record)
+        current = selected.get(key)
+        if current is None or (_has_jev(record) and not _has_jev(current)):
+            selected[key] = record
+
+    kept = []
+    seen = set()
+    for record in records:
+        key = _unique_key(record)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(selected[key])
+    return kept, len(records) - len(kept)
+
+
 def iter_jsonl_files(input_dir):
     return sorted(
         path for path in input_dir.rglob('*')
@@ -141,9 +172,10 @@ def iter_jsonl_files(input_dir):
 def process_file(source, target):
     """处理一个 JSONL 文件并返回统计信息。"""
     stats = Counter()
+    outputs = []
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    with source.open(encoding='utf-8') as src, target.open('w', encoding='utf-8') as dst:
+    with source.open(encoding='utf-8') as src:
         for line_no, line in enumerate(src, start=1):
             if not line.strip():
                 continue
@@ -163,6 +195,12 @@ def process_file(source, target):
             if error:
                 stats['bad_nlu'] += 1
                 print('[警告] %s:%d %s' % (source, line_no, error), file=sys.stderr)
+            outputs.append(output)
+
+    kept, dropped = dedupe_records(outputs)
+    stats['duplicates'] += dropped
+    with target.open('w', encoding='utf-8') as dst:
+        for output in kept:
             for item in output['llm']:
                 stats['llm:' + item['promptId']] += 1
             if output['llm']:
@@ -199,8 +237,8 @@ def main():
 
     print('[完成] 文件 %d，写出 %d，含模型记录 %d' % (
         len(files), total['written'], total['records_with_llm']))
-    print('[完成] JSON 失败 %d，nluResults 失败 %d' % (
-        total['bad_json'], total['bad_nlu']))
+    print('[完成] JSON 失败 %d，nluResults 失败 %d，重复键去掉 %d' % (
+        total['bad_json'], total['bad_nlu'], total['duplicates']))
     llm_counts = {
         key.split(':', 1)[1]: count
         for key, count in sorted(total.items())
