@@ -210,11 +210,31 @@ def process_file(source, target):
     return stats
 
 
-def main():
-    parser = argparse.ArgumentParser(description='提取 JSONL 日志中的基础字段和目标模型调用')
+def _cli_argv(argv=None):
+    """去掉 Jupyter 内核注入的 -f kernel.json，避免 argparse 误判。"""
+    if argv is None:
+        argv = sys.argv[1:]
+    cleaned = []
+    skip_next = False
+    for arg in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == '-f':
+            skip_next = True
+            continue
+        cleaned.append(arg)
+    return cleaned
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog='extract_nlu_llm.py',
+        description='提取 JSONL 日志中的基础字段和目标模型调用',
+    )
     parser.add_argument('--input-dir', required=True, help='包含原始 JSONL 的文件夹')
     parser.add_argument('--output-dir', required=True, help='保存提取结果的文件夹')
-    args = parser.parse_args()
+    args = parser.parse_args(_cli_argv(argv))
 
     input_dir = Path(args.input_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
